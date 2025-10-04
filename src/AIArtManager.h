@@ -50,10 +50,8 @@ private:
     void showLoadingAnimation(std::future<std::string>& future) const;
     void logMessage(const std::string& message) const;
 
-#ifdef USE_LIBCURL
     std::string requestViaStability(const CharacterTemplate& tmpl, const std::string& userPrompt,
         const std::string& fallbackAscii);
     std::string requestViaAutomatic1111(const CharacterTemplate& tmpl, const std::string& userPrompt,
         const std::string& fallbackAscii);
-#endif
 };

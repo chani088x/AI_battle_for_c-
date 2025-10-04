@@ -13,12 +13,17 @@ add_executable(ai_ascii_gacha
     src/AIArtManager.cpp
     src/Battle.cpp
     src/Utils.cpp
+    src/HttpClient.cpp
 )
 
 target_include_directories(ai_ascii_gacha PRIVATE src external)
 
 find_package(Threads REQUIRED)
 target_link_libraries(ai_ascii_gacha PRIVATE Threads::Threads)
+
+if(WIN32)
+    target_link_libraries(ai_ascii_gacha PRIVATE winhttp)
+endif()
 
 option(USE_LIBCURL "Enable libcurl integration" ON)
 option(AI_GACHA_FETCH_CURL "Automatically fetch and build libcurl if it is missing" ON)

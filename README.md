@@ -19,10 +19,9 @@ cmake --build build
 
 > 💡 **Visual Studio (Windows)**
 >
-> Visual Studio 2022에서 폴더를 열면 `AI_GACHA_FETCH_CURL` 옵션이 기본값 `ON`으로 적용되어, 시스템에 libcurl이 설치되어 있지 않아도
-> CMake가 자동으로 소스를 내려받아 빌드합니다. 네트워크가 차단된 환경에서는 다운로드가 실패할 수 있으며, 이 경우 CMake가 경고만 출력하고
-> HTTP 기능 없이(플레이스홀더 ASCII만 표시) 계속 구성됩니다. 이미 설치된 libcurl을 쓰거나 경고를 숨기고 싶다면 CMake 설정에서
-> `AI_GACHA_FETCH_CURL=OFF`로 변경하면 됩니다.
+> Windows에서는 libcurl이 없어도 자동으로 WinHTTP 기반 HTTP 클라이언트를 사용합니다. 따라서 추가 라이브러리 없이도 Automatic1111 WebUI
+> 호출이 정상 동작하며, Stability API처럼 HTTPS 엔드포인트도 그대로 이용할 수 있습니다. 별도로 libcurl을 사용하고 싶다면 CMake 설정에서
+> `USE_LIBCURL=ON`을 유지하거나, 기존과 동일하게 `AI_GACHA_FETCH_CURL=ON`으로 소스를 내려받아 빌드할 수 있습니다.
 
 ## 환경 변수
 
@@ -55,7 +54,7 @@ cmake --build build
 
 - C++17 이상 컴파일러
 - CMake 3.16+
-- (선택) libcurl – 기본적으로 CMake가 자동으로 내려받아 빌드하며, 시스템에 설치된 라이브러리를 사용하고 싶다면 `AI_GACHA_FETCH_CURL=OFF`
-  후 `find_package(CURL)`이 성공하도록 환경을 구성하세요.
+- (선택) libcurl – Linux/macOS 등에서 HTTP 클라이언트로 사용합니다. Windows에서는 WinHTTP가 기본으로 활성화되어 별도 설치가 필요
+  없습니다. libcurl을 명시적으로 사용하려면 `USE_LIBCURL=ON`을 유지하고 `find_package(CURL)`이 성공하도록 환경을 구성하세요.
 
 프로젝트에 포함된 `external/nlohmann/json.hpp`는 nlohmann/json 스타일과 호환되는 경량 구현체입니다.

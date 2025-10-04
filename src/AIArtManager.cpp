@@ -16,12 +16,9 @@
 #include <vector>
 
 #include "Utils.h"
+#include "HttpClient.h"
 
 #include <nlohmann/json.hpp>
-
-#ifdef USE_LIBCURL
-#include <curl/curl.h>
-#endif
 
 #include <functional>
 
@@ -201,14 +198,7 @@ std::string AIArtManager::placeholderAscii(const CharacterTemplate& tmpl) const 
     return generatePlaceholderAsciiArt(tmpl.name, tmpl.rarity);
 }
 
-#ifdef USE_LIBCURL
 namespace {
-size_t curlWriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
-    size_t totalSize = size * nmemb;
-    auto* buffer = static_cast<std::string*>(userp);
-    buffer->append(static_cast<const char*>(contents), totalSize);
-    return totalSize;
-}
 std::vector<unsigned char> decodeBase64(const std::string& input) {
     static const std::string chars =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -295,7 +285,6 @@ std::string convertImageToAscii(const std::vector<unsigned char>& image) {
 #endif
 }
 } // 익명 네임스페이스 종료
-#endif
 
 std::string AIArtManager::buildPrompt(const CharacterTemplate& tmpl, const std::string& userPrompt) const {
     std::ostringstream oss;
@@ -320,7 +309,6 @@ std::string AIArtManager::requestAsciiFromService(const CharacterTemplate& tmpl,
     std::string ascii = fallbackAscii;
     usedPlaceholder = true;
 
-#ifdef USE_LIBCURL
     if (config_.provider == AIServiceProvider::Stability) {
         logMessage("Stability API 요청 시작: " + tmpl.name);
         ascii = requestViaStability(tmpl, userPrompt, ascii);
@@ -328,13 +316,11 @@ std::string AIArtManager::requestAsciiFromService(const CharacterTemplate& tmpl,
         logMessage("Automatic1111 API 요청 시작: " + tmpl.name);
         ascii = requestViaAutomatic1111(tmpl, userPrompt, ascii);
     }
-#endif
 
     usedPlaceholder = (ascii == fallbackAscii);
     return ascii;
 }
 
-#ifdef USE_LIBCURL
 std::string AIArtManager::requestViaStability(const CharacterTemplate& tmpl, const std::string& userPrompt,
     const std::string& fallbackAscii) {
     if (config_.apiKey.empty() || config_.host.empty() || config_.engineId.empty()) {
@@ -342,15 +328,7 @@ std::string AIArtManager::requestViaStability(const CharacterTemplate& tmpl, con
         return fallbackAscii;
     }
 
-    CURL* curl = curl_easy_init();
-    if (!curl) {
-        logMessage("Stability API용 CURL 초기화에 실패했습니다.");
-        return fallbackAscii;
-    }
-
     std::string url = ensureTrailingSlash(config_.host) + "v1/generation/" + config_.engineId + "/text-to-image";
-    std::string response;
-
     nlohmann::json payload = nlohmann::json::object();
     nlohmann::json prompt = nlohmann::json::object();
     prompt["text"] = buildPrompt(tmpl, userPrompt);
@@ -362,29 +340,18 @@ std::string AIArtManager::requestViaStability(const CharacterTemplate& tmpl, con
     payload["height"] = 512;
     payload["width"] = 512;
 
-    std::string payloadStr = payload.dump();
-
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_POST, 1L);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payloadStr.c_str());
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, payloadStr.size());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curlWriteCallback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-
-    struct curl_slist* headers = nullptr;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-    headers = curl_slist_append(headers, "Accept: application/json");
-    std::string authHeader = "Authorization: Bearer " + config_.apiKey;
-    headers = curl_slist_append(headers, authHeader.c_str());
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-
     std::string ascii = fallbackAscii;
-    CURLcode res = curl_easy_perform(curl);
-    if (res == CURLE_OK) {
-        long status = 0;
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
-        if (status != 200) {
-            std::string statusMsg = "Stability API 응답 코드: " + std::to_string(status);
+    HttpResponse httpResponse;
+    std::string errorMessage;
+    std::vector<std::pair<std::string, std::string>> headers = {
+        {"Content-Type", "application/json"},
+        {"Accept", "application/json"},
+        {"Authorization", "Bearer " + config_.apiKey}
+    };
+
+    if (httpPost(url, payload.dump(), headers, httpResponse, errorMessage)) {
+        if (httpResponse.status != 200) {
+            std::string statusMsg = "Stability API 응답 코드: " + std::to_string(httpResponse.status);
             if (verbose_) {
                 std::cerr << "[AIArt] " << statusMsg << '\n';
             }
@@ -392,7 +359,7 @@ std::string AIArtManager::requestViaStability(const CharacterTemplate& tmpl, con
         }
         bool convertedSuccessfully = false;
         try {
-            auto json = nlohmann::json::parse(response);
+            auto json = nlohmann::json::parse(httpResponse.body);
             if (json.contains("artifacts")) {
                 const auto& artifacts = json["artifacts"];
                 if (artifacts.is_array()) {
@@ -427,15 +394,12 @@ std::string AIArtManager::requestViaStability(const CharacterTemplate& tmpl, con
             logMessage(warn);
         }
     } else {
-        std::string err = std::string("Stability API 호출 실패: ") + curl_easy_strerror(res);
+        std::string err = "Stability API 호출 실패: " + errorMessage;
         if (verbose_) {
             std::cerr << "[AIArt] " << err << '\n';
         }
         logMessage(err);
     }
-
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
     if (ascii == fallbackAscii) {
         logMessage("Stability API 결과가 플레이스홀더로 유지되었습니다.");
     } else {
@@ -451,15 +415,7 @@ std::string AIArtManager::requestViaAutomatic1111(const CharacterTemplate& tmpl,
         return fallbackAscii;
     }
 
-    CURL* curl = curl_easy_init();
-    if (!curl) {
-        logMessage("Automatic1111용 CURL 초기화에 실패했습니다.");
-        return fallbackAscii;
-    }
-
     std::string url = ensureTrailingSlash(config_.host) + "sdapi/v1/txt2img";
-    std::string response;
-
     nlohmann::json payload = nlohmann::json::object();
     payload["prompt"] = buildPrompt(tmpl, userPrompt);
     if (!config_.negativePrompt.empty()) {
@@ -470,34 +426,22 @@ std::string AIArtManager::requestViaAutomatic1111(const CharacterTemplate& tmpl,
     payload["width"] = 512;
     payload["height"] = 512;
 
-    std::string payloadStr = payload.dump();
-
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_POST, 1L);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payloadStr.c_str());
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, payloadStr.size());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curlWriteCallback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-
-    struct curl_slist* headers = nullptr;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
+    std::string ascii = fallbackAscii;
+    HttpResponse httpResponse;
+    std::string errorMessage;
+    std::vector<std::pair<std::string, std::string>> headers = {
+        {"Content-Type", "application/json"}
+    };
     if (!config_.basicAuth.empty()) {
-        std::string authHeader = "Authorization: Basic " + encodeBase64(config_.basicAuth);
-        headers = curl_slist_append(headers, authHeader.c_str());
+        headers.emplace_back("Authorization", "Basic " + encodeBase64(config_.basicAuth));
     }
     if (!config_.apiKeyHeader.empty() && !config_.apiKeyValue.empty()) {
-        std::string keyHeader = config_.apiKeyHeader + ": " + config_.apiKeyValue;
-        headers = curl_slist_append(headers, keyHeader.c_str());
+        headers.emplace_back(config_.apiKeyHeader, config_.apiKeyValue);
     }
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 
-    std::string ascii = fallbackAscii;
-    CURLcode res = curl_easy_perform(curl);
-    if (res == CURLE_OK) {
-        long status = 0;
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
-        if (status != 200) {
-            std::string statusMsg = "Automatic1111 응답 코드: " + std::to_string(status);
+    if (httpPost(url, payload.dump(), headers, httpResponse, errorMessage)) {
+        if (httpResponse.status != 200) {
+            std::string statusMsg = "Automatic1111 응답 코드: " + std::to_string(httpResponse.status);
             if (verbose_) {
                 std::cerr << "[AIArt] " << statusMsg << '\n';
             }
@@ -505,7 +449,7 @@ std::string AIArtManager::requestViaAutomatic1111(const CharacterTemplate& tmpl,
         }
         bool convertedSuccessfully = false;
         try {
-            auto json = nlohmann::json::parse(response);
+            auto json = nlohmann::json::parse(httpResponse.body);
             if (json.contains("images")) {
                 const auto& images = json["images"];
                 if (images.is_array()) {
@@ -539,7 +483,7 @@ std::string AIArtManager::requestViaAutomatic1111(const CharacterTemplate& tmpl,
                 }
             }
         } catch (const std::exception&) {
-            // 자동1111 응답 파싱 중 문제가 생기면 플레이스홀더로 유지한다.
+            // 파싱/변환 오류는 무시하고 플레이스홀더 아트로 되돌아간다.
         }
         if (!convertedSuccessfully) {
             std::string warn = "Automatic1111 응답에서 유효한 이미지를 찾지 못했습니다. 플레이스홀더를 사용합니다.";
@@ -549,15 +493,12 @@ std::string AIArtManager::requestViaAutomatic1111(const CharacterTemplate& tmpl,
             logMessage(warn);
         }
     } else {
-        std::string err = std::string("Automatic1111 호출 실패: ") + curl_easy_strerror(res);
+        std::string err = "Automatic1111 호출 실패: " + errorMessage;
         if (verbose_) {
             std::cerr << "[AIArt] " << err << '\n';
         }
         logMessage(err);
     }
-
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
     if (ascii == fallbackAscii) {
         logMessage("Automatic1111 결과가 플레이스홀더로 유지되었습니다.");
     } else {
@@ -565,7 +506,7 @@ std::string AIArtManager::requestViaAutomatic1111(const CharacterTemplate& tmpl,
     }
     return ascii;
 }
-#endif
+
 
 void AIArtManager::showLoadingAnimation(std::future<std::string>& future) const {
     if (!verbose_) {
