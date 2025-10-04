@@ -6,6 +6,7 @@
 #include <fstream>
 #include <future>
 #include <iostream>
+#include <cctype>
 #include <sstream>
 #include <thread>
 #include <vector>
@@ -24,22 +25,72 @@
 #include "stb_image.h"
 #endif
 
+namespace {
+std::string toLower(std::string value) {
+    for (char& ch : value) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    return value;
+}
+
+std::string ensureTrailingSlash(const std::string& base) {
+    if (base.empty() || base.back() == '/') {
+        return base;
+    }
+    return base + "/";
+}
+} // 익명 네임스페이스 종료
+
 AIArtManager::AIArtManager(const std::string& cacheDir)
     : cacheDir_(cacheDir), asciiDir_(cacheDir_ + "/ascii") {
     ensureDirectory(asciiDir_);
 
-    if (const char* host = std::getenv("STABILITY_API_HOST")) {
-        config_.host = host;
-    } else {
-        config_.host = "https://api.stability.ai";
+    std::string providerChoice;
+    if (const char* providerEnv = std::getenv("AI_GACHA_PROVIDER")) {
+        providerChoice = toLower(providerEnv);
     }
-    if (const char* engine = std::getenv("STABILITY_ENGINE_ID")) {
-        config_.engineId = engine;
-    } else {
-        config_.engineId = "stable-diffusion-v1-6";
+
+    if (providerChoice == "automatic1111") {
+        config_.provider = AIServiceProvider::Automatic1111;
+    } else if (providerChoice == "stability") {
+        config_.provider = AIServiceProvider::Stability;
+    } else if (providerChoice == "none") {
+        config_.provider = AIServiceProvider::None;
     }
+
     if (const char* apiKey = std::getenv("STABILITY_API_KEY")) {
         config_.apiKey = apiKey;
+        if (config_.provider == AIServiceProvider::None && !config_.apiKey.empty()) {
+            config_.provider = AIServiceProvider::Stability;
+        }
+    }
+
+    if (config_.provider == AIServiceProvider::None) {
+        // 기본값은 로컬 Automatic1111 WebUI를 사용한다고 가정한다.
+        config_.provider = AIServiceProvider::Automatic1111;
+    }
+
+    if (config_.provider == AIServiceProvider::Stability) {
+        if (const char* host = std::getenv("STABILITY_API_HOST")) {
+            config_.host = host;
+        } else {
+            config_.host = "https://api.stability.ai";
+        }
+        if (const char* engine = std::getenv("STABILITY_ENGINE_ID")) {
+            config_.engineId = engine;
+        } else {
+            config_.engineId = "stable-diffusion-v1-6";
+        }
+    } else if (config_.provider == AIServiceProvider::Automatic1111) {
+        if (const char* host = std::getenv("A1111_API_HOST")) {
+            config_.host = host;
+        } else {
+            config_.host = "http://127.0.0.1:7860";
+        }
+    }
+
+    if (const char* negative = std::getenv("A1111_NEGATIVE_PROMPT")) {
+        config_.negativePrompt = negative;
     }
 }
 
@@ -184,16 +235,29 @@ std::string AIArtManager::requestAsciiFromService(const CharacterTemplate& tmpl,
     std::string ascii = placeholderAscii(tmpl);
 
 #ifdef USE_LIBCURL
+    if (config_.provider == AIServiceProvider::Stability) {
+        ascii = requestViaStability(tmpl, userPrompt, ascii);
+    } else if (config_.provider == AIServiceProvider::Automatic1111) {
+        ascii = requestViaAutomatic1111(tmpl, userPrompt, ascii);
+    }
+#endif
+
+    return ascii;
+}
+
+#ifdef USE_LIBCURL
+std::string AIArtManager::requestViaStability(const CharacterTemplate& tmpl, const std::string& userPrompt,
+    const std::string& fallbackAscii) {
     if (config_.apiKey.empty() || config_.host.empty() || config_.engineId.empty()) {
-        return ascii;
+        return fallbackAscii;
     }
 
     CURL* curl = curl_easy_init();
     if (!curl) {
-        return ascii;
+        return fallbackAscii;
     }
 
-    std::string url = config_.host + "/v1/generation/" + config_.engineId + "/text-to-image";
+    std::string url = ensureTrailingSlash(config_.host) + "v1/generation/" + config_.engineId + "/text-to-image";
     std::string response;
 
     nlohmann::json payload = nlohmann::json::object();
@@ -223,6 +287,7 @@ std::string AIArtManager::requestAsciiFromService(const CharacterTemplate& tmpl,
     headers = curl_slist_append(headers, authHeader.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 
+    std::string ascii = fallbackAscii;
     CURLcode res = curl_easy_perform(curl);
     if (res == CURLE_OK) {
         try {
@@ -256,10 +321,83 @@ std::string AIArtManager::requestAsciiFromService(const CharacterTemplate& tmpl,
 
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
-#endif
-
     return ascii;
 }
+
+std::string AIArtManager::requestViaAutomatic1111(const CharacterTemplate& tmpl, const std::string& userPrompt,
+    const std::string& fallbackAscii) {
+    if (config_.host.empty()) {
+        return fallbackAscii;
+    }
+
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        return fallbackAscii;
+    }
+
+    std::string url = ensureTrailingSlash(config_.host) + "sdapi/v1/txt2img";
+    std::string response;
+
+    nlohmann::json payload = nlohmann::json::object();
+    payload["prompt"] = buildPrompt(tmpl, userPrompt);
+    if (!config_.negativePrompt.empty()) {
+        payload["negative_prompt"] = config_.negativePrompt;
+    }
+    payload["cfg_scale"] = 7.0;
+    payload["steps"] = 30;
+    payload["width"] = 512;
+    payload["height"] = 512;
+
+    std::string payloadStr = payload.dump();
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payloadStr.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, payloadStr.size());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curlWriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+
+    struct curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+
+    std::string ascii = fallbackAscii;
+    CURLcode res = curl_easy_perform(curl);
+    if (res == CURLE_OK) {
+        try {
+            auto json = nlohmann::json::parse(response);
+            if (json.contains("images")) {
+                const auto& images = json["images"];
+                if (images.is_array()) {
+                    for (size_t i = 0; i < images.size(); ++i) {
+                        const auto& imageEntry = images[i];
+                        if (!imageEntry.is_string()) {
+                            continue;
+                        }
+                        std::string base64Data = imageEntry.get<std::string>();
+                        auto delimiterPos = base64Data.find(",");
+                        if (delimiterPos != std::string::npos) {
+                            base64Data = base64Data.substr(delimiterPos + 1);
+                        }
+                        std::vector<unsigned char> decoded = decodeBase64(base64Data);
+                        std::string converted = convertImageToAscii(decoded);
+                        if (!converted.empty()) {
+                            ascii = converted;
+                            break;
+                        }
+                    }
+                }
+            }
+        } catch (const std::exception&) {
+            // 자동1111 응답 파싱 중 문제가 생기면 플레이스홀더로 유지한다.
+        }
+    }
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    return ascii;
+}
+#endif
 
 void AIArtManager::showLoadingAnimation(std::future<std::string>& future) const {
     if (!verbose_) {
