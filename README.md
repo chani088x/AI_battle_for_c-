@@ -19,9 +19,10 @@ cmake --build build
 
 > 💡 **Visual Studio (Windows)**
 >
-> Windows에서는 libcurl이 없어도 자동으로 WinHTTP 기반 HTTP 클라이언트를 사용합니다. 따라서 추가 라이브러리 없이도 Automatic1111 WebUI
-> 호출이 정상 동작하며, Stability API처럼 HTTPS 엔드포인트도 그대로 이용할 수 있습니다. 별도로 libcurl을 사용하고 싶다면 CMake 설정에서
-> `USE_LIBCURL=ON`을 유지하거나, 기존과 동일하게 `AI_GACHA_FETCH_CURL=ON`으로 소스를 내려받아 빌드할 수 있습니다.
+> 기본 CMake 설정에서는 Windows에서 `USE_LIBCURL=OFF`로 동작하며, 내부 WinHTTP 클라이언트를 사용해 자동으로 HTTP 요청을 처리합니다.
+> 따라서 libcurl이 설치되어 있지 않아도 오류 없이 실행되며, Automatic1111 WebUI와 HTTPS 기반 Stability API 모두 정상적으로 호출됩니다.
+> 만약 명시적으로 libcurl을 사용하고 싶다면 구성 단계에서 `-DUSE_LIBCURL=ON`을 전달하고, 필요하다면 `-DAI_GACHA_FETCH_CURL=ON`으로 소스
+> 다운로드를 허용하세요.
 
 ## 환경 변수
 
@@ -54,7 +55,8 @@ cmake --build build
 
 - C++17 이상 컴파일러
 - CMake 3.16+
-- (선택) libcurl – Linux/macOS 등에서 HTTP 클라이언트로 사용합니다. Windows에서는 WinHTTP가 기본으로 활성화되어 별도 설치가 필요
-  없습니다. libcurl을 명시적으로 사용하려면 `USE_LIBCURL=ON`을 유지하고 `find_package(CURL)`이 성공하도록 환경을 구성하세요.
+- (선택) libcurl – Linux/macOS 등에서 HTTP 클라이언트로 사용합니다. Windows에서는 기본적으로 WinHTTP가 활성화되어 별도 설치가 필요 없
+  습니다. libcurl을 명시적으로 사용하려면 `cmake -DUSE_LIBCURL=ON`으로 재구성하고 `find_package(CURL)`이 성공하도록 환경을 준비하거나
+  `AI_GACHA_FETCH_CURL=ON`으로 소스 다운로드를 허용하면 됩니다.
 
 프로젝트에 포함된 `external/nlohmann/json.hpp`는 nlohmann/json 스타일과 호환되는 경량 구현체입니다.
