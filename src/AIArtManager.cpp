@@ -527,21 +527,30 @@ std::string AIArtManager::requestViaAutomatic1111(const CharacterTemplate& tmpl,
             auto json = nlohmann::json::parse(httpResponse.body);
             if (json.contains("images")) {
                 const auto& images = json["images"];
+                auto handleCandidate = [&](const nlohmann::json& candidateNode) {
+                    auto base64Candidate = findBase64Image(candidateNode);
+                    if (!base64Candidate) {
+                        return false;
+                    }
+                    std::vector<unsigned char> decoded = decodeBase64(*base64Candidate);
+                    std::string converted = convertImageToAscii(decoded);
+                    if (converted.empty()) {
+                        return false;
+                    }
+                    ascii = converted;
+                    convertedSuccessfully = true;
+                    return true;
+                };
+
                 if (images.is_array()) {
-                    for (size_t i = 0; i < images.size(); ++i) {
-                        const auto& imageEntry = images[i];
-                        auto base64Candidate = findBase64Image(imageEntry);
-                        if (!base64Candidate) {
-                            continue;
-                        }
-                        std::vector<unsigned char> decoded = decodeBase64(*base64Candidate);
-                        std::string converted = convertImageToAscii(decoded);
-                        if (!converted.empty()) {
-                            ascii = converted;
-                            convertedSuccessfully = true;
+                    const auto imageArray = images.get<nlohmann::json::array_t>();
+                    for (const auto& imageEntry : imageArray) {
+                        if (handleCandidate(imageEntry)) {
                             break;
                         }
                     }
+                } else {
+                    handleCandidate(images);
                 }
             }
         } catch (const std::exception&) {
