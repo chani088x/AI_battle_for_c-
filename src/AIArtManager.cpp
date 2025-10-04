@@ -21,6 +21,7 @@
 #include <nlohmann/json.hpp>
 
 #include <functional>
+#include <optional>
 
 #ifdef USE_STB_IMAGE
 #include "stb_image.h"
@@ -39,6 +40,80 @@ std::string ensureTrailingSlash(const std::string& base) {
         return base;
     }
     return base + "/";
+}
+
+bool looksLikeBase64(const std::string& value) {
+    if (value.size() < 16) {
+        return false;
+    }
+    size_t usefulChars = 0;
+    for (char ch : value) {
+        if (ch == '\r' || ch == '\n' || ch == ' ' || ch == '\t') {
+            continue;
+        }
+        if (std::isalnum(static_cast<unsigned char>(ch)) || ch == '+' || ch == '/' || ch == '=' || ch == '-' || ch == '_') {
+            ++usefulChars;
+            continue;
+        }
+        return false;
+    }
+    return usefulChars >= 16;
+}
+
+std::string stripDataUriPrefix(const std::string& value) {
+    auto delimiterPos = value.find(',');
+    if (delimiterPos != std::string::npos) {
+        return value.substr(delimiterPos + 1);
+    }
+    return value;
+}
+
+std::optional<std::string> findBase64Image(const nlohmann::json& node) {
+    if (node.is_string()) {
+        std::string candidate = node.get<std::string>();
+        std::string stripped = stripDataUriPrefix(candidate);
+        if (looksLikeBase64(stripped)) {
+            return stripped;
+        }
+        return std::nullopt;
+    }
+
+    if (node.is_array()) {
+        const auto elements = node.get<nlohmann::json::array_t>();
+        for (const auto& element : elements) {
+            auto found = findBase64Image(element);
+            if (found) {
+                return found;
+            }
+        }
+        return std::nullopt;
+    }
+
+    if (node.is_object()) {
+        const auto object = node.get<nlohmann::json::object_t>();
+        static const std::vector<std::string> preferredKeys = {
+            "image", "data", "bytes", "base64", "payload", "content"
+        };
+
+        for (const std::string& key : preferredKeys) {
+            auto it = object.find(key);
+            if (it != object.end()) {
+                auto found = findBase64Image(it->second);
+                if (found) {
+                    return found;
+                }
+            }
+        }
+
+        for (const auto& item : object) {
+            auto found = findBase64Image(item.second);
+            if (found) {
+                return found;
+            }
+        }
+    }
+
+    return std::nullopt;
 }
 
 std::string providerToString(AIServiceProvider provider) {
@@ -455,24 +530,11 @@ std::string AIArtManager::requestViaAutomatic1111(const CharacterTemplate& tmpl,
                 if (images.is_array()) {
                     for (size_t i = 0; i < images.size(); ++i) {
                         const auto& imageEntry = images[i];
-                        std::string base64Data;
-                        if (imageEntry.is_string()) {
-                            base64Data = imageEntry.get<std::string>();
-                        } else if (imageEntry.is_object()) {
-                            if (imageEntry.contains("image") && imageEntry["image"].is_string()) {
-                                base64Data = imageEntry["image"].get<std::string>();
-                            } else if (imageEntry.contains("data") && imageEntry["data"].is_string()) {
-                                base64Data = imageEntry["data"].get<std::string>();
-                            }
-                        }
-                        if (base64Data.empty()) {
+                        auto base64Candidate = findBase64Image(imageEntry);
+                        if (!base64Candidate) {
                             continue;
                         }
-                        auto delimiterPos = base64Data.find(",");
-                        if (delimiterPos != std::string::npos) {
-                            base64Data = base64Data.substr(delimiterPos + 1);
-                        }
-                        std::vector<unsigned char> decoded = decodeBase64(base64Data);
+                        std::vector<unsigned char> decoded = decodeBase64(*base64Candidate);
                         std::string converted = convertImageToAscii(decoded);
                         if (!converted.empty()) {
                             ascii = converted;
