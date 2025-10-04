@@ -20,8 +20,9 @@ cmake --build build
 > 💡 **Visual Studio (Windows)**
 >
 > Visual Studio 2022에서 폴더를 열면 `AI_GACHA_FETCH_CURL` 옵션이 기본값 `ON`으로 적용되어, 시스템에 libcurl이 설치되어 있지 않아도
-> CMake가 자동으로 소스를 내려받아 빌드합니다. 별도의 vcpkg 설정 없이도 HTTP 기능을 사용할 수 있으며, 이미 설치된 libcurl을 쓰고
-> 싶다면 CMake 설정에서 `AI_GACHA_FETCH_CURL=OFF`로 변경하면 됩니다.
+> CMake가 자동으로 소스를 내려받아 빌드합니다. 네트워크가 차단된 환경에서는 다운로드가 실패할 수 있으며, 이 경우 CMake가 경고만 출력하고
+> HTTP 기능 없이(플레이스홀더 ASCII만 표시) 계속 구성됩니다. 이미 설치된 libcurl을 쓰거나 경고를 숨기고 싶다면 CMake 설정에서
+> `AI_GACHA_FETCH_CURL=OFF`로 변경하면 됩니다.
 
 ## 환경 변수
 
