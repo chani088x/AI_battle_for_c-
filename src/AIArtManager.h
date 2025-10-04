@@ -1,6 +1,7 @@
 #pragma once
 
 #include <future>
+#include <mutex>
 #include <string>
 
 #include "Character.h"
@@ -32,8 +33,10 @@ public:
 private:
     std::string cacheDir_;
     std::string asciiDir_;
+    std::string logPath_;
     AIServiceConfig config_;
     bool verbose_{true};
+    mutable std::mutex logMutex_;
 
     std::string cacheFilePath(const CharacterTemplate& tmpl, const std::string& userPrompt) const;
     bool loadFromCache(const std::string& path, std::string& asciiArt) const;
@@ -44,6 +47,7 @@ private:
     std::string placeholderAscii(const CharacterTemplate& tmpl) const;
 
     void showLoadingAnimation(std::future<std::string>& future) const;
+    void logMessage(const std::string& message) const;
 
 #ifdef USE_LIBCURL
     std::string requestViaStability(const CharacterTemplate& tmpl, const std::string& userPrompt,

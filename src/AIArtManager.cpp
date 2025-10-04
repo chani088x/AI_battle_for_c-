@@ -6,6 +6,8 @@
 #include <fstream>
 #include <future>
 #include <iostream>
+#include <iomanip>
+#include <ctime>
 #include <cctype>
 #include <sstream>
 #include <thread>
@@ -39,10 +41,23 @@ std::string ensureTrailingSlash(const std::string& base) {
     }
     return base + "/";
 }
+
+std::string providerToString(AIServiceProvider provider) {
+    switch (provider) {
+    case AIServiceProvider::Stability:
+        return "Stability";
+    case AIServiceProvider::Automatic1111:
+        return "Automatic1111";
+    case AIServiceProvider::None:
+    default:
+        return "None";
+    }
+}
 } // 익명 네임스페이스 종료
 
 AIArtManager::AIArtManager(const std::string& cacheDir)
-    : cacheDir_(cacheDir), asciiDir_(cacheDir_ + "/ascii") {
+    : cacheDir_(cacheDir), asciiDir_(cacheDir_ + "/ascii"), logPath_(cacheDir_ + "/ai_art.log") {
+    ensureDirectory(cacheDir_);
     ensureDirectory(asciiDir_);
 
     std::string providerChoice;
@@ -103,6 +118,8 @@ AIArtManager::AIArtManager(const std::string& cacheDir)
     if (const char* negative = std::getenv("A1111_NEGATIVE_PROMPT")) {
         config_.negativePrompt = negative;
     }
+
+    logMessage("AIArtManager 초기화: provider=" + providerToString(config_.provider) + ", host=" + config_.host);
 }
 
 void AIArtManager::setVerbose(bool verbose) {
@@ -136,12 +153,16 @@ void AIArtManager::attachAsciiArt(Character& character, const CharacterTemplate&
     std::string cachePath = cacheFilePath(tmpl, userPrompt);
     std::string asciiArt;
     if (!loadFromCache(cachePath, asciiArt)) {
+        logMessage("캐시 미스 발생: " + cachePath + ", 새로운 ASCII 아트를 생성합니다.");
         auto future = std::async(std::launch::async, [this, tmpl, userPrompt]() {
             return requestAsciiFromService(tmpl, userPrompt);
         });
         showLoadingAnimation(future);
         asciiArt = future.get();
         saveToCache(cachePath, asciiArt);
+        logMessage("새 ASCII 아트를 캐시에 저장했습니다: " + cachePath);
+    } else {
+        logMessage("캐시 히트: " + cachePath);
     }
     character.asciiArt = asciiArt;
     character.artCachePath = cachePath;
@@ -270,8 +291,10 @@ std::string AIArtManager::requestAsciiFromService(const CharacterTemplate& tmpl,
 
 #ifdef USE_LIBCURL
     if (config_.provider == AIServiceProvider::Stability) {
+        logMessage("Stability API 요청 시작: " + tmpl.name);
         ascii = requestViaStability(tmpl, userPrompt, ascii);
     } else if (config_.provider == AIServiceProvider::Automatic1111) {
+        logMessage("Automatic1111 API 요청 시작: " + tmpl.name);
         ascii = requestViaAutomatic1111(tmpl, userPrompt, ascii);
     }
 #endif
@@ -283,11 +306,13 @@ std::string AIArtManager::requestAsciiFromService(const CharacterTemplate& tmpl,
 std::string AIArtManager::requestViaStability(const CharacterTemplate& tmpl, const std::string& userPrompt,
     const std::string& fallbackAscii) {
     if (config_.apiKey.empty() || config_.host.empty() || config_.engineId.empty()) {
+        logMessage("Stability API 구성 값이 부족해 플레이스홀더를 사용합니다.");
         return fallbackAscii;
     }
 
     CURL* curl = curl_easy_init();
     if (!curl) {
+        logMessage("Stability API용 CURL 초기화에 실패했습니다.");
         return fallbackAscii;
     }
 
@@ -326,8 +351,12 @@ std::string AIArtManager::requestViaStability(const CharacterTemplate& tmpl, con
     if (res == CURLE_OK) {
         long status = 0;
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
-        if (status != 200 && verbose_) {
-            std::cerr << "[AIArt] Stability API 응답 코드: " << status << '\n';
+        if (status != 200) {
+            std::string statusMsg = "Stability API 응답 코드: " + std::to_string(status);
+            if (verbose_) {
+                std::cerr << "[AIArt] " << statusMsg << '\n';
+            }
+            logMessage(statusMsg);
         }
         bool convertedSuccessfully = false;
         try {
@@ -358,26 +387,41 @@ std::string AIArtManager::requestViaStability(const CharacterTemplate& tmpl, con
         } catch (const std::exception&) {
             // 파싱/변환 오류는 무시하고 플레이스홀더 아트로 되돌아간다.
         }
-        if (!convertedSuccessfully && verbose_) {
-            std::cerr << "[AIArt] Stability API 응답에서 유효한 이미지를 찾지 못해 플레이스홀더를 사용합니다." << '\n';
+        if (!convertedSuccessfully) {
+            std::string warn = "Stability API 응답에서 유효한 이미지를 찾지 못했습니다. 플레이스홀더를 사용합니다.";
+            if (verbose_) {
+                std::cerr << "[AIArt] " << warn << '\n';
+            }
+            logMessage(warn);
         }
-    } else if (verbose_) {
-        std::cerr << "[AIArt] Stability API 호출 실패: " << curl_easy_strerror(res) << '\n';
+    } else {
+        std::string err = std::string("Stability API 호출 실패: ") + curl_easy_strerror(res);
+        if (verbose_) {
+            std::cerr << "[AIArt] " << err << '\n';
+        }
+        logMessage(err);
     }
 
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
+    if (ascii == fallbackAscii) {
+        logMessage("Stability API 결과가 플레이스홀더로 유지되었습니다.");
+    } else {
+        logMessage("Stability API 결과를 ASCII 아트로 변환했습니다.");
+    }
     return ascii;
 }
 
 std::string AIArtManager::requestViaAutomatic1111(const CharacterTemplate& tmpl, const std::string& userPrompt,
     const std::string& fallbackAscii) {
     if (config_.host.empty()) {
+        logMessage("Automatic1111 호스트가 비어 있어 플레이스홀더를 사용합니다.");
         return fallbackAscii;
     }
 
     CURL* curl = curl_easy_init();
     if (!curl) {
+        logMessage("Automatic1111용 CURL 초기화에 실패했습니다.");
         return fallbackAscii;
     }
 
@@ -420,8 +464,12 @@ std::string AIArtManager::requestViaAutomatic1111(const CharacterTemplate& tmpl,
     if (res == CURLE_OK) {
         long status = 0;
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
-        if (status != 200 && verbose_) {
-            std::cerr << "[AIArt] Automatic1111 응답 코드: " << status << '\n';
+        if (status != 200) {
+            std::string statusMsg = "Automatic1111 응답 코드: " + std::to_string(status);
+            if (verbose_) {
+                std::cerr << "[AIArt] " << statusMsg << '\n';
+            }
+            logMessage(statusMsg);
         }
         bool convertedSuccessfully = false;
         try {
@@ -461,15 +509,28 @@ std::string AIArtManager::requestViaAutomatic1111(const CharacterTemplate& tmpl,
         } catch (const std::exception&) {
             // 자동1111 응답 파싱 중 문제가 생기면 플레이스홀더로 유지한다.
         }
-        if (!convertedSuccessfully && verbose_) {
-            std::cerr << "[AIArt] Automatic1111 응답에서 유효한 이미지를 찾지 못해 플레이스홀더를 사용합니다." << '\n';
+        if (!convertedSuccessfully) {
+            std::string warn = "Automatic1111 응답에서 유효한 이미지를 찾지 못했습니다. 플레이스홀더를 사용합니다.";
+            if (verbose_) {
+                std::cerr << "[AIArt] " << warn << '\n';
+            }
+            logMessage(warn);
         }
-    } else if (verbose_) {
-        std::cerr << "[AIArt] Automatic1111 호출 실패: " << curl_easy_strerror(res) << '\n';
+    } else {
+        std::string err = std::string("Automatic1111 호출 실패: ") + curl_easy_strerror(res);
+        if (verbose_) {
+            std::cerr << "[AIArt] " << err << '\n';
+        }
+        logMessage(err);
     }
 
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
+    if (ascii == fallbackAscii) {
+        logMessage("Automatic1111 결과가 플레이스홀더로 유지되었습니다.");
+    } else {
+        logMessage("Automatic1111 결과를 ASCII 아트로 변환했습니다.");
+    }
     return ascii;
 }
 #endif
@@ -488,4 +549,24 @@ void AIArtManager::showLoadingAnimation(std::future<std::string>& future) const 
         ++index;
     }
     std::cout << "\rAI 아트를 생성 중... 완료!    \n";
+}
+
+void AIArtManager::logMessage(const std::string& message) const {
+    std::lock_guard<std::mutex> lock(logMutex_);
+    std::ofstream file(logPath_, std::ios::app);
+    if (!file.is_open()) {
+        return;
+    }
+
+    auto now = std::chrono::system_clock::now();
+    std::time_t nowTime = std::chrono::system_clock::to_time_t(now);
+    std::tm timeInfo{};
+
+#if defined(_WIN32)
+    localtime_s(&timeInfo, &nowTime);
+#else
+    localtime_r(&nowTime, &timeInfo);
+#endif
+
+    file << '[' << std::put_time(&timeInfo, "%F %T") << "] " << message << '\n';
 }
