@@ -17,6 +17,12 @@ cmake --build build
 ./build/ai_ascii_gacha
 ```
 
+> 💡 **Visual Studio (Windows)**
+>
+> Visual Studio 2022에서 폴더를 열면 `AI_GACHA_FETCH_CURL` 옵션이 기본값 `ON`으로 적용되어, 시스템에 libcurl이 설치되어 있지 않아도
+> CMake가 자동으로 소스를 내려받아 빌드합니다. 별도의 vcpkg 설정 없이도 HTTP 기능을 사용할 수 있으며, 이미 설치된 libcurl을 쓰고
+> 싶다면 CMake 설정에서 `AI_GACHA_FETCH_CURL=OFF`로 변경하면 됩니다.
+
 ## 환경 변수
 
 ### AI 서비스 선택
@@ -48,6 +54,7 @@ cmake --build build
 
 - C++17 이상 컴파일러
 - CMake 3.16+
-- (선택) libcurl – API 연동 시 필요
+- (선택) libcurl – 기본적으로 CMake가 자동으로 내려받아 빌드하며, 시스템에 설치된 라이브러리를 사용하고 싶다면 `AI_GACHA_FETCH_CURL=OFF`
+  후 `find_package(CURL)`이 성공하도록 환경을 구성하세요.
 
 프로젝트에 포함된 `external/nlohmann/json.hpp`는 nlohmann/json 스타일과 호환되는 경량 구현체입니다.
