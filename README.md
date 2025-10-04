@@ -24,6 +24,8 @@ cmake --build build
 - `AI_GACHA_PROVIDER`: `stability`, `automatic1111`, `none` 중 하나를 지정합니다. 기본값은 키가 설정되어 있으면 Stability, 그렇지 않으면 로컬 Automatic1111 WebUI(`http://127.0.0.1:7860`)를 시도합니다.
 - `A1111_API_HOST` (선택): Automatic1111 WebUI의 기본 URL. 미설정 시 `http://127.0.0.1:7860`을 사용합니다.
 - `A1111_NEGATIVE_PROMPT` (선택): 모든 요청에 공통으로 붙일 네거티브 프롬프트 문자열.
+- `A1111_API_AUTH` (선택): Automatic1111을 `--api-auth 사용자:비밀번호`로 실행한 경우 동일한 문자열을 지정하면 Basic 인증 헤더를 자동으로 붙입니다.
+- `A1111_API_KEY` / `A1111_API_KEY_HEADER` (선택): 일부 포크(예: ReForge)에서 요구하는 API 키 헤더 값을 설정합니다. 헤더 이름을 생략하면 기본으로 `X-API-Key`를 사용합니다.
 
 ### Stability API 사용 시
 
@@ -31,7 +33,12 @@ cmake --build build
 - `STABILITY_ENGINE_ID` (선택): 사용할 엔진 ID. 기본값은 `stable-diffusion-v1-6`입니다.
 - `STABILITY_API_HOST` (선택): API 호스트. 기본값은 `https://api.stability.ai`입니다.
 
-정상적인 PNG → ASCII 변환을 위해서는 `USE_STB_IMAGE` 옵션을 켜고(기본 OFF) `stb_image.h`를 포함한 상태로 빌드해야 합니다. 헤더가 없거나 디코딩이 실패하면 Placeholder ASCII 아트를 사용합니다.
+정상적인 PNG → ASCII 변환을 위해서는 `USE_STB_IMAGE` 옵션을 켜고(기본 OFF) `stb_image.h`를 포함한 상태로 빌드해야 합니다. 헤더가 없거나 디코딩이 실패하면 Placeholder ASCII 아트를 사용합니다. Automatic1111/ReForge의 실제 이미지를 ASCII로 확인하려면 다음과 같이 옵션을 켜 주세요.
+
+```bash
+cmake -S . -B build -DUSE_STB_IMAGE=ON
+cmake --build build
+```
 
 ## 캐시 위치
 

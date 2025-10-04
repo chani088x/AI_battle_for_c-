@@ -16,6 +16,9 @@ struct AIServiceConfig {
     std::string engineId;
     std::string apiKey;
     std::string negativePrompt;
+    std::string basicAuth;
+    std::string apiKeyHeader;
+    std::string apiKeyValue;
     AIServiceProvider provider{AIServiceProvider::None};
 };
 

@@ -87,6 +87,17 @@ AIArtManager::AIArtManager(const std::string& cacheDir)
         } else {
             config_.host = "http://127.0.0.1:7860";
         }
+        if (const char* auth = std::getenv("A1111_API_AUTH")) {
+            config_.basicAuth = auth;
+        }
+        if (const char* apiKey = std::getenv("A1111_API_KEY")) {
+            config_.apiKeyValue = apiKey;
+        }
+        if (const char* apiKeyHeader = std::getenv("A1111_API_KEY_HEADER")) {
+            config_.apiKeyHeader = apiKeyHeader;
+        } else if (!config_.apiKeyValue.empty()) {
+            config_.apiKeyHeader = "X-API-Key";
+        }
     }
 
     if (const char* negative = std::getenv("A1111_NEGATIVE_PROMPT")) {
@@ -172,6 +183,29 @@ std::vector<unsigned char> decodeBase64(const std::string& input) {
             output.push_back(static_cast<unsigned char>((val >> valb) & 0xFF));
             valb -= 8;
         }
+    }
+    return output;
+}
+
+std::string encodeBase64(const std::string& input) {
+    static const std::string chars =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string output;
+    int val = 0;
+    int valb = -6;
+    for (unsigned char c : input) {
+        val = (val << 8) + c;
+        valb += 8;
+        while (valb >= 0) {
+            output.push_back(chars[(val >> valb) & 0x3F]);
+            valb -= 6;
+        }
+    }
+    if (valb > -6) {
+        output.push_back(chars[((val << 8) >> (valb + 8)) & 0x3F]);
+    }
+    while (output.size() % 4 != 0) {
+        output.push_back('=');
     }
     return output;
 }
@@ -290,6 +324,12 @@ std::string AIArtManager::requestViaStability(const CharacterTemplate& tmpl, con
     std::string ascii = fallbackAscii;
     CURLcode res = curl_easy_perform(curl);
     if (res == CURLE_OK) {
+        long status = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+        if (status != 200 && verbose_) {
+            std::cerr << "[AIArt] Stability API 응답 코드: " << status << '\n';
+        }
+        bool convertedSuccessfully = false;
         try {
             auto json = nlohmann::json::parse(response);
             if (json.contains("artifacts")) {
@@ -309,6 +349,7 @@ std::string AIArtManager::requestViaStability(const CharacterTemplate& tmpl, con
                         std::string converted = convertImageToAscii(decoded);
                         if (!converted.empty()) {
                             ascii = converted;
+                            convertedSuccessfully = true;
                             break;
                         }
                     }
@@ -317,6 +358,11 @@ std::string AIArtManager::requestViaStability(const CharacterTemplate& tmpl, con
         } catch (const std::exception&) {
             // 파싱/변환 오류는 무시하고 플레이스홀더 아트로 되돌아간다.
         }
+        if (!convertedSuccessfully && verbose_) {
+            std::cerr << "[AIArt] Stability API 응답에서 유효한 이미지를 찾지 못해 플레이스홀더를 사용합니다." << '\n';
+        }
+    } else if (verbose_) {
+        std::cerr << "[AIArt] Stability API 호출 실패: " << curl_easy_strerror(res) << '\n';
     }
 
     curl_slist_free_all(headers);
@@ -359,11 +405,25 @@ std::string AIArtManager::requestViaAutomatic1111(const CharacterTemplate& tmpl,
 
     struct curl_slist* headers = nullptr;
     headers = curl_slist_append(headers, "Content-Type: application/json");
+    if (!config_.basicAuth.empty()) {
+        std::string authHeader = "Authorization: Basic " + encodeBase64(config_.basicAuth);
+        headers = curl_slist_append(headers, authHeader.c_str());
+    }
+    if (!config_.apiKeyHeader.empty() && !config_.apiKeyValue.empty()) {
+        std::string keyHeader = config_.apiKeyHeader + ": " + config_.apiKeyValue;
+        headers = curl_slist_append(headers, keyHeader.c_str());
+    }
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 
     std::string ascii = fallbackAscii;
     CURLcode res = curl_easy_perform(curl);
     if (res == CURLE_OK) {
+        long status = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+        if (status != 200 && verbose_) {
+            std::cerr << "[AIArt] Automatic1111 응답 코드: " << status << '\n';
+        }
+        bool convertedSuccessfully = false;
         try {
             auto json = nlohmann::json::parse(response);
             if (json.contains("images")) {
@@ -371,10 +431,19 @@ std::string AIArtManager::requestViaAutomatic1111(const CharacterTemplate& tmpl,
                 if (images.is_array()) {
                     for (size_t i = 0; i < images.size(); ++i) {
                         const auto& imageEntry = images[i];
-                        if (!imageEntry.is_string()) {
+                        std::string base64Data;
+                        if (imageEntry.is_string()) {
+                            base64Data = imageEntry.get<std::string>();
+                        } else if (imageEntry.is_object()) {
+                            if (imageEntry.contains("image") && imageEntry["image"].is_string()) {
+                                base64Data = imageEntry["image"].get<std::string>();
+                            } else if (imageEntry.contains("data") && imageEntry["data"].is_string()) {
+                                base64Data = imageEntry["data"].get<std::string>();
+                            }
+                        }
+                        if (base64Data.empty()) {
                             continue;
                         }
-                        std::string base64Data = imageEntry.get<std::string>();
                         auto delimiterPos = base64Data.find(",");
                         if (delimiterPos != std::string::npos) {
                             base64Data = base64Data.substr(delimiterPos + 1);
@@ -383,6 +452,7 @@ std::string AIArtManager::requestViaAutomatic1111(const CharacterTemplate& tmpl,
                         std::string converted = convertImageToAscii(decoded);
                         if (!converted.empty()) {
                             ascii = converted;
+                            convertedSuccessfully = true;
                             break;
                         }
                     }
@@ -391,6 +461,11 @@ std::string AIArtManager::requestViaAutomatic1111(const CharacterTemplate& tmpl,
         } catch (const std::exception&) {
             // 자동1111 응답 파싱 중 문제가 생기면 플레이스홀더로 유지한다.
         }
+        if (!convertedSuccessfully && verbose_) {
+            std::cerr << "[AIArt] Automatic1111 응답에서 유효한 이미지를 찾지 못해 플레이스홀더를 사용합니다." << '\n';
+        }
+    } else if (verbose_) {
+        std::cerr << "[AIArt] Automatic1111 호출 실패: " << curl_easy_strerror(res) << '\n';
     }
 
     curl_slist_free_all(headers);
