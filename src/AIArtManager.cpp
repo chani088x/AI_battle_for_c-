@@ -1,6 +1,7 @@
 #include "AIArtManager.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
@@ -10,6 +11,7 @@
 #include <ctime>
 #include <cctype>
 #include <sstream>
+#include <memory>
 #include <thread>
 #include <vector>
 
@@ -151,21 +153,48 @@ void AIArtManager::saveToCache(const std::string& path, const std::string& ascii
 
 void AIArtManager::attachAsciiArt(Character& character, const CharacterTemplate& tmpl, const std::string& userPrompt) {
     std::string cachePath = cacheFilePath(tmpl, userPrompt);
+    std::string fallback = placeholderAscii(tmpl);
     std::string asciiArt;
-    if (!loadFromCache(cachePath, asciiArt)) {
+    bool cacheValid = false;
+
+    if (loadFromCache(cachePath, asciiArt)) {
+        if (asciiArt == fallback) {
+            logMessage("캐시에 플레이스홀더 ASCII가 저장되어 있어 무시합니다: " + cachePath);
+        } else {
+            cacheValid = true;
+            logMessage("캐시 히트: " + cachePath);
+        }
+    }
+
+    if (!cacheValid) {
         logMessage("캐시 미스 발생: " + cachePath + ", 새로운 ASCII 아트를 생성합니다.");
-        auto future = std::async(std::launch::async, [this, tmpl, userPrompt]() {
-            return requestAsciiFromService(tmpl, userPrompt);
+        auto placeholderFlag = std::make_shared<std::atomic<bool>>(true);
+        auto future = std::async(std::launch::async, [this, tmpl, userPrompt, fallback, placeholderFlag]() {
+            bool usedPlaceholder = true;
+            std::string ascii = requestAsciiFromService(tmpl, userPrompt, fallback, usedPlaceholder);
+            placeholderFlag->store(usedPlaceholder);
+            return ascii;
         });
         showLoadingAnimation(future);
         asciiArt = future.get();
-        saveToCache(cachePath, asciiArt);
-        logMessage("새 ASCII 아트를 캐시에 저장했습니다: " + cachePath);
+        bool usedPlaceholder = placeholderFlag->load();
+        if (!usedPlaceholder) {
+            saveToCache(cachePath, asciiArt);
+            logMessage("새 ASCII 아트를 캐시에 저장했습니다: " + cachePath);
+            character.artCachePath = cachePath;
+        } else {
+            logMessage("플레이스홀더 ASCII는 캐시에 저장하지 않습니다: " + cachePath);
+            character.artCachePath.clear();
+        }
     } else {
-        logMessage("캐시 히트: " + cachePath);
+        character.artCachePath = cachePath;
     }
+
+    if (asciiArt.empty()) {
+        asciiArt = fallback;
+    }
+
     character.asciiArt = asciiArt;
-    character.artCachePath = cachePath;
 }
 
 std::string AIArtManager::placeholderAscii(const CharacterTemplate& tmpl) const {
@@ -286,8 +315,10 @@ std::string AIArtManager::buildPrompt(const CharacterTemplate& tmpl, const std::
     return oss.str();
 }
 
-std::string AIArtManager::requestAsciiFromService(const CharacterTemplate& tmpl, const std::string& userPrompt) {
-    std::string ascii = placeholderAscii(tmpl);
+std::string AIArtManager::requestAsciiFromService(const CharacterTemplate& tmpl, const std::string& userPrompt,
+    const std::string& fallbackAscii, bool& usedPlaceholder) {
+    std::string ascii = fallbackAscii;
+    usedPlaceholder = true;
 
 #ifdef USE_LIBCURL
     if (config_.provider == AIServiceProvider::Stability) {
@@ -299,6 +330,7 @@ std::string AIArtManager::requestAsciiFromService(const CharacterTemplate& tmpl,
     }
 #endif
 
+    usedPlaceholder = (ascii == fallbackAscii);
     return ascii;
 }
 

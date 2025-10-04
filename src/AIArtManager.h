@@ -42,7 +42,8 @@ private:
     bool loadFromCache(const std::string& path, std::string& asciiArt) const;
     void saveToCache(const std::string& path, const std::string& asciiArt) const;
 
-    std::string requestAsciiFromService(const CharacterTemplate& tmpl, const std::string& userPrompt);
+    std::string requestAsciiFromService(const CharacterTemplate& tmpl, const std::string& userPrompt,
+        const std::string& fallbackAscii, bool& usedPlaceholder);
     std::string buildPrompt(const CharacterTemplate& tmpl, const std::string& userPrompt) const;
     std::string placeholderAscii(const CharacterTemplate& tmpl) const;
 
