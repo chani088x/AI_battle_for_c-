@@ -47,6 +47,10 @@ cmake -S . -B build -DUSE_STB_IMAGE=ON
 cmake --build build
 ```
 
+> 🔁 **Automatic1111에서 Base64 출력이 비활성화된 경우**
+>
+> 일부 포크(예: ReForge)나 사용자 설정에서 API 응답의 `images` 항목이 Base64 문자열 대신 이미지 파일 경로만 제공될 수 있습니다. 이 경우 현재 사용자 계정에서 해당 경로를 직접 읽어 PNG 데이터를 가져와 ASCII로 변환합니다. 경로가 다른 드라이브에 있거나 접근 권한이 없다면 Placeholder ASCII가 사용되므로, WebUI가 저장하는 디렉터리에 대한 읽기 권한을 확보해 주세요.
+
 ## 캐시 위치
 
 - ASCII 아트 캐시: `.cache/ascii/*.txt`

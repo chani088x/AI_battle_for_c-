@@ -14,6 +14,7 @@
 #include <memory>
 #include <thread>
 #include <vector>
+#include <filesystem>
 
 #include "Utils.h"
 #include "HttpClient.h"
@@ -114,6 +115,99 @@ std::optional<std::string> findBase64Image(const nlohmann::json& node) {
     }
 
     return std::nullopt;
+}
+
+bool looksLikeImagePath(const std::string& value) {
+    if (value.empty()) {
+        return false;
+    }
+
+    std::string lower = value;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+
+    static const std::vector<std::string> extensions = {
+        ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"
+    };
+
+    bool hasSeparator = lower.find('/') != std::string::npos || lower.find('\\') != std::string::npos;
+    bool hasExtension = std::any_of(extensions.begin(), extensions.end(), [&](const std::string& ext) {
+        return lower.size() >= ext.size() && lower.rfind(ext) == lower.size() - ext.size();
+    });
+
+    return hasExtension || hasSeparator;
+}
+
+std::optional<std::string> findImagePath(const nlohmann::json& node) {
+    if (node.is_string()) {
+        std::string candidate = node.get<std::string>();
+        if (looksLikeImagePath(candidate)) {
+            return candidate;
+        }
+        return std::nullopt;
+    }
+
+    if (node.is_array()) {
+        const auto elements = node.get<nlohmann::json::array_t>();
+        for (const auto& element : elements) {
+            auto found = findImagePath(element);
+            if (found) {
+                return found;
+            }
+        }
+        return std::nullopt;
+    }
+
+    if (node.is_object()) {
+        const auto object = node.get<nlohmann::json::object_t>();
+        static const std::vector<std::string> preferredKeys = {
+            "path", "file", "filename", "name", "output", "image"
+        };
+
+        for (const std::string& key : preferredKeys) {
+            auto it = object.find(key);
+            if (it != object.end()) {
+                auto found = findImagePath(it->second);
+                if (found) {
+                    return found;
+                }
+            }
+        }
+
+        for (const auto& item : object) {
+            auto found = findImagePath(item.second);
+            if (found) {
+                return found;
+            }
+        }
+    }
+
+    return std::nullopt;
+}
+
+std::vector<unsigned char> readBinaryFile(const std::string& path) {
+    std::filesystem::path fsPath(path);
+    std::error_code ec;
+    if (!std::filesystem::exists(fsPath, ec) || std::filesystem::is_directory(fsPath, ec)) {
+        return {};
+    }
+
+    std::ifstream file(fsPath, std::ios::binary);
+    if (!file.is_open()) {
+        return {};
+    }
+
+    file.seekg(0, std::ios::end);
+    std::streampos size = file.tellg();
+    if (size <= 0) {
+        return {};
+    }
+    file.seekg(0, std::ios::beg);
+
+    std::vector<unsigned char> buffer(static_cast<size_t>(size));
+    file.read(reinterpret_cast<char*>(buffer.data()), size);
+    return buffer;
 }
 
 std::string providerToString(AIServiceProvider provider) {
@@ -539,34 +633,60 @@ std::string AIArtManager::requestViaAutomatic1111(const CharacterTemplate& tmpl,
             auto json = nlohmann::json::parse(httpResponse.body);
             auto handleCandidate = [&](const nlohmann::json& candidateNode, const char* debugSource) {
                 auto base64Candidate = findBase64Image(candidateNode);
-                if (!base64Candidate) {
-                    return false;
-                }
-
-                std::vector<unsigned char> decoded = decodeBase64(*base64Candidate);
-                if (decoded.empty()) {
-                    std::string where = debugSource ? std::string(debugSource) : std::string("알 수 없는 경로");
-                    logMessage("Automatic1111 Base64 디코딩이 실패했습니다 (" + where + ")");
-                    return false;
-                }
-
-                std::string converted = convertImageToAscii(decoded);
-                if (converted.empty()) {
-                    std::string where = debugSource ? std::string(debugSource) : std::string("알 수 없는 경로");
+                if (base64Candidate) {
+                    std::vector<unsigned char> decoded = decodeBase64(*base64Candidate);
+                    if (decoded.empty()) {
+                        std::string where = debugSource ? std::string(debugSource) : std::string("알 수 없는 경로");
+                        logMessage("Automatic1111 Base64 디코딩이 실패했습니다 (" + where + ")");
+                    } else {
+                        std::string converted = convertImageToAscii(decoded);
+                        if (converted.empty()) {
+                            std::string where = debugSource ? std::string(debugSource) : std::string("알 수 없는 경로");
 #ifdef USE_STB_IMAGE
-                    logMessage("Automatic1111 PNG 디코딩에 실패했습니다 (" + where + ")");
+                            logMessage("Automatic1111 PNG 디코딩에 실패했습니다 (" + where + ")");
 #else
-                    logMessage("USE_STB_IMAGE가 비활성화되어 PNG 데이터를 ASCII로 변환하지 못했습니다 (" + where + ")");
+                            logMessage("USE_STB_IMAGE가 비활성화되어 PNG 데이터를 ASCII로 변환하지 못했습니다 (" + where + ")");
 #endif
-                    return false;
+                        } else {
+                            ascii = converted;
+                            convertedSuccessfully = true;
+                            if (debugSource) {
+                                logMessage(std::string("Automatic1111 응답에서 Base64 이미지를 추출했습니다 (출처: ") + debugSource + ")");
+                            }
+                            return true;
+                        }
+                    }
                 }
 
-                ascii = converted;
-                convertedSuccessfully = true;
-                if (debugSource) {
-                    logMessage(std::string("Automatic1111 응답에서 Base64 이미지를 추출했습니다 (출처: ") + debugSource + ")");
+                auto pathCandidate = findImagePath(candidateNode);
+                if (pathCandidate) {
+                    std::vector<unsigned char> fileBytes = readBinaryFile(*pathCandidate);
+                    if (fileBytes.empty()) {
+                        std::string where = debugSource ? std::string(debugSource) : std::string("알 수 없는 경로");
+                        logMessage("Automatic1111 파일 경로를 찾았지만 열 수 없습니다 (" + where + ": " + *pathCandidate + ")");
+                        return false;
+                    }
+
+                    std::string converted = convertImageToAscii(fileBytes);
+                    if (converted.empty()) {
+                        std::string where = debugSource ? std::string(debugSource) : std::string("알 수 없는 경로");
+#ifdef USE_STB_IMAGE
+                        logMessage("Automatic1111 파일 이미지를 ASCII로 변환하지 못했습니다 (" + where + ": " + *pathCandidate + ")");
+#else
+                        logMessage("USE_STB_IMAGE가 비활성화되어 파일 이미지를 ASCII로 변환하지 못했습니다 (" + where + ": " + *pathCandidate + ")");
+#endif
+                        return false;
+                    }
+
+                    ascii = converted;
+                    convertedSuccessfully = true;
+                    if (debugSource) {
+                        logMessage(std::string("Automatic1111 응답에서 파일 경로 이미지를 불러왔습니다 (출처: ") + debugSource + ")");
+                    }
+                    return true;
                 }
-                return true;
+
+                return false;
             };
 
             if (json.contains("images")) {
