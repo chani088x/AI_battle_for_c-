@@ -525,33 +525,40 @@ std::string AIArtManager::requestViaAutomatic1111(const CharacterTemplate& tmpl,
         bool convertedSuccessfully = false;
         try {
             auto json = nlohmann::json::parse(httpResponse.body);
+            auto handleCandidate = [&](const nlohmann::json& candidateNode, const char* debugSource) {
+                auto base64Candidate = findBase64Image(candidateNode);
+                if (!base64Candidate) {
+                    return false;
+                }
+                std::vector<unsigned char> decoded = decodeBase64(*base64Candidate);
+                std::string converted = convertImageToAscii(decoded);
+                if (converted.empty()) {
+                    return false;
+                }
+                ascii = converted;
+                convertedSuccessfully = true;
+                if (debugSource) {
+                    logMessage(std::string("Automatic1111 응답에서 Base64 이미지를 추출했습니다 (출처: ") + debugSource + ")");
+                }
+                return true;
+            };
+
             if (json.contains("images")) {
                 const auto& images = json["images"];
-                auto handleCandidate = [&](const nlohmann::json& candidateNode) {
-                    auto base64Candidate = findBase64Image(candidateNode);
-                    if (!base64Candidate) {
-                        return false;
-                    }
-                    std::vector<unsigned char> decoded = decodeBase64(*base64Candidate);
-                    std::string converted = convertImageToAscii(decoded);
-                    if (converted.empty()) {
-                        return false;
-                    }
-                    ascii = converted;
-                    convertedSuccessfully = true;
-                    return true;
-                };
-
                 if (images.is_array()) {
                     const auto imageArray = images.get<nlohmann::json::array_t>();
                     for (const auto& imageEntry : imageArray) {
-                        if (handleCandidate(imageEntry)) {
+                        if (handleCandidate(imageEntry, "images 배열")) {
                             break;
                         }
                     }
                 } else {
-                    handleCandidate(images);
+                    handleCandidate(images, "images 객체");
                 }
+            }
+
+            if (!convertedSuccessfully) {
+                handleCandidate(json, "최상위 응답");
             }
         } catch (const std::exception&) {
             // 파싱/변환 오류는 무시하고 플레이스홀더 아트로 되돌아간다.
