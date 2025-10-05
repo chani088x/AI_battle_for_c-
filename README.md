@@ -7,6 +7,7 @@ C++17 콘솔 환경에서 동작하는 가챠 기반 RPG 예제입니다. AI 이
 - **가챠 시스템**: `std::mt19937`와 `std::discrete_distribution`을 사용해 1~5성 캐릭터를 확률적으로 뽑습니다.
 - **AI 아트 파이프라인**: 캐릭터를 뽑을 때 콘솔에서 입력한 프롬프트를 기반으로 Stability AI 또는 로컬 Automatic1111 WebUI를 호출하고(`std::async` 비동기 처리), 실패 시 내부 Placeholder ASCII 아트를 생성해 캐시합니다.
 - **ASCII 캐싱**: `.cache/ascii/` 폴더에 캐릭터별 ASCII 아트를 저장하여 동일 캐릭터를 다시 뽑아도 즉시 로딩됩니다.
+- **이미지 캐싱**: Automatic1111에서 내려받은 PNG 이미지를 `.cache/images/`에 저장하고, ASCII 캐시가 비어 있을 때도 PNG만으로 다시 변환할 수 있습니다.
 - **턴제 전투**: 매 라운드마다 공격/방어/후퇴 중 하나를 직접 선택해 전략적으로 전투를 진행할 수 있습니다.
 
 ## 빌드 및 실행
@@ -49,11 +50,12 @@ cmake --build build
 
 > 🔁 **Automatic1111에서 Base64 출력이 비활성화된 경우**
 >
-> 일부 포크(예: ReForge)나 사용자 설정에서 API 응답의 `images` 항목이 Base64 문자열 대신 이미지 파일 경로만 제공될 수 있습니다. 이 경우 현재 사용자 계정에서 해당 경로를 직접 읽어 PNG 데이터를 가져와 ASCII로 변환합니다. 경로가 다른 드라이브에 있거나 접근 권한이 없다면 Placeholder ASCII가 사용되므로, WebUI가 저장하는 디렉터리에 대한 읽기 권한을 확보해 주세요.
+> 일부 포크(예: ReForge)나 사용자 설정에서 API 응답의 `images` 항목이 Base64 문자열 대신 이미지 파일 경로만 제공될 수 있습니다. 이제 응답이 Base64이든 파일 경로이든 상관없이 PNG 데이터를 `.cache/images/`에 복사한 뒤 ASCII로 변환합니다. PNG만 남아 있는 상황에서도 동일 폴더의 파일을 읽어 ASCII 캐시를 재생성하므로, WebUI가 이미지를 저장하는 디렉터리에 대한 읽기 권한만 확보하면 됩니다.
 
 ## 캐시 위치
 
 - ASCII 아트 캐시: `.cache/ascii/*.txt`
+- PNG 이미지 캐시: `.cache/images/*.png`
 
 ## 의존성
 

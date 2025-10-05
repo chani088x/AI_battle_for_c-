@@ -34,16 +34,20 @@ private:
     std::string cacheDir_;
     std::string asciiDir_;
     std::string logPath_;
+    std::string imageDir_;
     AIServiceConfig config_;
     bool verbose_{true};
     mutable std::mutex logMutex_;
 
     std::string cacheFilePath(const CharacterTemplate& tmpl, const std::string& userPrompt) const;
+    std::string imageCachePath(const CharacterTemplate& tmpl, const std::string& userPrompt) const;
     bool loadFromCache(const std::string& path, std::string& asciiArt) const;
     void saveToCache(const std::string& path, const std::string& asciiArt) const;
+    bool rebuildAsciiFromImageCache(const std::string& imagePath, std::string& asciiArt) const;
+    void saveImageToCache(const std::string& imagePath, const std::vector<unsigned char>& bytes) const;
 
     std::string requestAsciiFromService(const CharacterTemplate& tmpl, const std::string& userPrompt,
-        const std::string& fallbackAscii, bool& usedPlaceholder);
+        const std::string& fallbackAscii, bool& usedPlaceholder, const std::string& imageCachePath);
     std::string buildPrompt(const CharacterTemplate& tmpl, const std::string& userPrompt) const;
     std::string placeholderAscii(const CharacterTemplate& tmpl) const;
 
@@ -51,7 +55,7 @@ private:
     void logMessage(const std::string& message) const;
 
     std::string requestViaStability(const CharacterTemplate& tmpl, const std::string& userPrompt,
-        const std::string& fallbackAscii);
+        const std::string& fallbackAscii, const std::string& imageCachePath);
     std::string requestViaAutomatic1111(const CharacterTemplate& tmpl, const std::string& userPrompt,
-        const std::string& fallbackAscii);
+        const std::string& fallbackAscii, const std::string& imageCachePath);
 };

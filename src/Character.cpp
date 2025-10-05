@@ -29,6 +29,7 @@ nlohmann::json Character::toJson() const {
     data["skill"] = skill;
     data["asciiArt"] = asciiArt;
     data["artCachePath"] = artCachePath;
+    data["artImagePath"] = artImagePath;
     return data;
 }
 
@@ -42,6 +43,7 @@ Character Character::fromJson(const nlohmann::json& data) {
     result.skill = data.value<std::string>("skill", "");
     result.asciiArt = data.value<std::string>("asciiArt", "");
     result.artCachePath = data.value<std::string>("artCachePath", "");
+    result.artImagePath = data.value<std::string>("artImagePath", "");
     result.currentHP = result.maxHP;
     return result;
 }

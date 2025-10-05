@@ -224,9 +224,11 @@ std::string providerToString(AIServiceProvider provider) {
 } // 익명 네임스페이스 종료
 
 AIArtManager::AIArtManager(const std::string& cacheDir)
-    : cacheDir_(cacheDir), asciiDir_(cacheDir_ + "/ascii"), logPath_(cacheDir_ + "/ai_art.log") {
+    : cacheDir_(cacheDir), asciiDir_(cacheDir_ + "/ascii"), logPath_(cacheDir_ + "/ai_art.log"),
+      imageDir_(cacheDir_ + "/images") {
     ensureDirectory(cacheDir_);
     ensureDirectory(asciiDir_);
+    ensureDirectory(imageDir_);
 
     std::string providerChoice;
     if (const char* providerEnv = std::getenv("AI_GACHA_PROVIDER")) {
@@ -300,6 +302,12 @@ std::string AIArtManager::cacheFilePath(const CharacterTemplate& tmpl, const std
     return asciiDir_ + "/" + name + "_" + hashSuffix + ".txt";
 }
 
+std::string AIArtManager::imageCachePath(const CharacterTemplate& tmpl, const std::string& userPrompt) const {
+    std::string name = sanitizeFileName(tmpl.name + "_" + std::to_string(tmpl.rarity));
+    std::string hashSuffix = userPrompt.empty() ? "default" : std::to_string(std::hash<std::string>{}(userPrompt));
+    return imageDir_ + "/" + name + "_" + hashSuffix + ".png";
+}
+
 bool AIArtManager::loadFromCache(const std::string& path, std::string& asciiArt) const {
     std::ifstream file(path);
     if (!file.is_open()) {
@@ -317,8 +325,56 @@ void AIArtManager::saveToCache(const std::string& path, const std::string& ascii
     file << asciiArt;
 }
 
+namespace {
+std::string convertImageToAscii(const std::vector<unsigned char>& image);
+}
+
+bool AIArtManager::rebuildAsciiFromImageCache(const std::string& imagePath, std::string& asciiArt) const {
+    if (imagePath.empty()) {
+        return false;
+    }
+
+    std::vector<unsigned char> bytes = readBinaryFile(imagePath);
+    if (bytes.empty()) {
+        return false;
+    }
+
+    std::string rebuilt = convertImageToAscii(bytes);
+    if (rebuilt.empty()) {
+        return false;
+    }
+
+    asciiArt = rebuilt;
+    logMessage("이미지 캐시에서 ASCII 아트를 재생성했습니다: " + imagePath);
+    return true;
+}
+
+void AIArtManager::saveImageToCache(const std::string& imagePath, const std::vector<unsigned char>& bytes) const {
+    if (imagePath.empty() || bytes.empty()) {
+        return;
+    }
+
+    std::filesystem::path fsPath(imagePath);
+    std::error_code ec;
+    std::filesystem::create_directories(fsPath.parent_path(), ec);
+    std::ofstream file(fsPath, std::ios::binary);
+    if (!file.is_open()) {
+        logMessage("이미지 캐시 파일을 열 수 없습니다: " + imagePath);
+        return;
+    }
+
+    file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    if (!file.good()) {
+        logMessage("이미지 캐시 파일 저장 중 오류 발생: " + imagePath);
+        return;
+    }
+
+    logMessage("새 이미지 파일을 캐시에 저장했습니다: " + imagePath);
+}
+
 void AIArtManager::attachAsciiArt(Character& character, const CharacterTemplate& tmpl, const std::string& userPrompt) {
     std::string cachePath = cacheFilePath(tmpl, userPrompt);
+    std::string imagePath = imageCachePath(tmpl, userPrompt);
     std::string fallback = placeholderAscii(tmpl);
     std::string asciiArt;
     bool cacheValid = false;
@@ -332,12 +388,18 @@ void AIArtManager::attachAsciiArt(Character& character, const CharacterTemplate&
         }
     }
 
+    if (!cacheValid && rebuildAsciiFromImageCache(imagePath, asciiArt)) {
+        cacheValid = true;
+        saveToCache(cachePath, asciiArt);
+        logMessage("이미지 캐시를 기반으로 ASCII 아트를 복구했습니다: " + cachePath);
+    }
+
     if (!cacheValid) {
         logMessage("캐시 미스 발생: " + cachePath + ", 새로운 ASCII 아트를 생성합니다.");
         auto placeholderFlag = std::make_shared<std::atomic<bool>>(true);
-        auto future = std::async(std::launch::async, [this, tmpl, userPrompt, fallback, placeholderFlag]() {
+        auto future = std::async(std::launch::async, [this, tmpl, userPrompt, fallback, placeholderFlag, imagePath]() {
             bool usedPlaceholder = true;
-            std::string ascii = requestAsciiFromService(tmpl, userPrompt, fallback, usedPlaceholder);
+            std::string ascii = requestAsciiFromService(tmpl, userPrompt, fallback, usedPlaceholder, imagePath);
             placeholderFlag->store(usedPlaceholder);
             return ascii;
         });
@@ -348,12 +410,28 @@ void AIArtManager::attachAsciiArt(Character& character, const CharacterTemplate&
             saveToCache(cachePath, asciiArt);
             logMessage("새 ASCII 아트를 캐시에 저장했습니다: " + cachePath);
             character.artCachePath = cachePath;
+            if (!imagePath.empty()) {
+                character.artImagePath = imagePath;
+            }
         } else {
             logMessage("플레이스홀더 ASCII는 캐시에 저장하지 않습니다: " + cachePath);
             character.artCachePath.clear();
+            character.artImagePath.clear();
+            if (!imagePath.empty()) {
+                std::error_code ec;
+                std::filesystem::remove(imagePath, ec);
+            }
         }
     } else {
         character.artCachePath = cachePath;
+        if (!imagePath.empty()) {
+            std::error_code ec;
+            if (std::filesystem::exists(imagePath, ec)) {
+                character.artImagePath = imagePath;
+            } else {
+                character.artImagePath.clear();
+            }
+        }
     }
 
     if (asciiArt.empty()) {
@@ -486,16 +564,16 @@ std::string AIArtManager::buildPrompt(const CharacterTemplate& tmpl, const std::
 }
 
 std::string AIArtManager::requestAsciiFromService(const CharacterTemplate& tmpl, const std::string& userPrompt,
-    const std::string& fallbackAscii, bool& usedPlaceholder) {
+    const std::string& fallbackAscii, bool& usedPlaceholder, const std::string& imageCachePath) {
     std::string ascii = fallbackAscii;
     usedPlaceholder = true;
 
     if (config_.provider == AIServiceProvider::Stability) {
         logMessage("Stability API 요청 시작: " + tmpl.name);
-        ascii = requestViaStability(tmpl, userPrompt, ascii);
+        ascii = requestViaStability(tmpl, userPrompt, ascii, imageCachePath);
     } else if (config_.provider == AIServiceProvider::Automatic1111) {
         logMessage("Automatic1111 API 요청 시작: " + tmpl.name);
-        ascii = requestViaAutomatic1111(tmpl, userPrompt, ascii);
+        ascii = requestViaAutomatic1111(tmpl, userPrompt, ascii, imageCachePath);
     }
 
     usedPlaceholder = (ascii == fallbackAscii);
@@ -503,7 +581,7 @@ std::string AIArtManager::requestAsciiFromService(const CharacterTemplate& tmpl,
 }
 
 std::string AIArtManager::requestViaStability(const CharacterTemplate& tmpl, const std::string& userPrompt,
-    const std::string& fallbackAscii) {
+    const std::string& fallbackAscii, const std::string& imageCachePath) {
     if (config_.apiKey.empty() || config_.host.empty() || config_.engineId.empty()) {
         logMessage("Stability API 구성 값이 부족해 플레이스홀더를 사용합니다.");
         return fallbackAscii;
@@ -559,6 +637,7 @@ std::string AIArtManager::requestViaStability(const CharacterTemplate& tmpl, con
                         if (!converted.empty()) {
                             ascii = converted;
                             convertedSuccessfully = true;
+                            saveImageToCache(imageCachePath, decoded);
                             break;
                         }
                     }
@@ -590,7 +669,7 @@ std::string AIArtManager::requestViaStability(const CharacterTemplate& tmpl, con
 }
 
 std::string AIArtManager::requestViaAutomatic1111(const CharacterTemplate& tmpl, const std::string& userPrompt,
-    const std::string& fallbackAscii) {
+    const std::string& fallbackAscii, const std::string& imageCachePath) {
     if (config_.host.empty()) {
         logMessage("Automatic1111 호스트가 비어 있어 플레이스홀더를 사용합니다.");
         return fallbackAscii;
@@ -650,6 +729,7 @@ std::string AIArtManager::requestViaAutomatic1111(const CharacterTemplate& tmpl,
                         } else {
                             ascii = converted;
                             convertedSuccessfully = true;
+                            saveImageToCache(imageCachePath, decoded);
                             if (debugSource) {
                                 logMessage(std::string("Automatic1111 응답에서 Base64 이미지를 추출했습니다 (출처: ") + debugSource + ")");
                             }
@@ -680,6 +760,7 @@ std::string AIArtManager::requestViaAutomatic1111(const CharacterTemplate& tmpl,
 
                     ascii = converted;
                     convertedSuccessfully = true;
+                    saveImageToCache(imageCachePath, fileBytes);
                     if (debugSource) {
                         logMessage(std::string("Automatic1111 응답에서 파일 경로 이미지를 불러왔습니다 (출처: ") + debugSource + ")");
                     }

@@ -23,6 +23,7 @@ struct Character {
     std::string skill;
     std::string asciiArt;
     std::string artCachePath;
+    std::string artImagePath;
     int currentHP{0};
 
     Character() = default;
